@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Book Appointment</title>
+    <style>
+        :root {
+            --bg-body: #0f172a;
+            --bg-card: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: #334155;
+            --accent: #38bdf8;
+            --accent-soft: rgba(56, 189, 248, 0.1);
+            --radius: 12px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            padding: 40px 20px;
+            /* Remove display: flex from here so things don't squish horizontally */
+            line-height: 1.6;
+        }
+
+        /* This wrapper centers the card on the screen */
+        .page-wrapper {
+            max-width: 500px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .container {
+            background: var(--bg-card);
+            padding: 32px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+        }
+
+        h2 { font-size: 1.5rem; margin-bottom: 4px; }
+        .patient-email { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 16px; }
+        
+        h3 { 
+            font-size: 1rem; 
+            color: var(--accent); 
+            background: var(--accent-soft); 
+            display: inline-block; 
+            padding: 6px 16px; 
+            border-radius: 20px; 
+            border: 1px solid var(--accent);
+            margin-bottom: 24px;
+        }
+
+        h4 { 
+            font-size: 0.8rem; 
+            text-transform: uppercase; 
+            letter-spacing: 1.5px; 
+            color: var(--text-muted); 
+            margin-bottom: 12px; 
+        }
+        
+        /* THIS KEEPS DATES SIDE BY SIDE */
+        .date-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+
+        .day-button {
+            background: rgba(15, 23, 42, 0.5);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-align: center;
+        }
+
+        .day-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+        .day-button.active { background: var(--accent); border-color: var(--accent); color: #000; }
+
+        /* SLOTS STACKED VERTICALLY */
+        .render-slots-div {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .slot-label {
+            display: flex;
+            align-items: center;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border);
+            padding: 14px;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+
+        .slot-radio { margin-right: 12px; accent-color: var(--accent); width: 18px; height: 18px; }
+
+        .booked-slot {
+            padding: 14px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            text-decoration: line-through;
+            opacity: 0.6;
+            background: rgba(255,255,255,0.01);
+            border-radius: 10px;
+        }
+
+        .book-button {
+            width: 250px;
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--accent);
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            font-weight: 800;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .book-button:hover { opacity: 0.9; }
+    </style>
+</head>
+
+<body>
+    <h2>Patient: {{ patient_name }}</h2>
+    <p>Email: {{ patient_email }}</p>
+    <h3>Clinic: {{ clinic_name }}</h3>
+
+    <input type="hidden" class="booking-token" value="{{ token }}">
+
+    <h4>Select a Date:</h4>
+    {% for day in next_days %}
+    <button class="day-button" data-date="{{ day }}">{{ day }}</button>
+    {% endfor %}
+
+    <div class="render-slots-div"></div>
+
+    <button class="book-button">Confirm Booking</button>
+
+    <script>
+        const tokenEl = document.querySelector(".booking-token");
+        const renderSlotsDiv = document.querySelector(".render-slots-div");
+        const bookButton = document.querySelector(".book-button");
+
+        let selectedSlot = null;
+        let selectedDate = null;
+        let timings = null;
+        let API_BASE_URL = "http://127.0.0.1:8000"
+
+        // -------------------------------
+        // FETCH & RENDER SLOTS
+        // -------------------------------
+        document.querySelectorAll(".day-button").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                selectedDate = btn.dataset.date;
+                selectedSlot = null;
+                renderSlotsDiv.innerHTML = "Loading slots...";
+
+                const response = await fetch(`${API_BASE_URL}/day-slots`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        token: tokenEl.value,
+                        date: selectedDate
+                    })
+                });
+
+                const data = await response.json();
+                const slots = data.slots;
+                if (slots === null){
+                    renderSlotsDiv.innerHTML = "";
+                    renderSlotsDiv.innerHTML = "No slots available !"
+                };
+                renderSlotsDiv.innerHTML = "";
+
+                const keys = Object.keys(slots);
+
+                if (keys.length === 0) {
+                    renderSlotsDiv.innerHTML = "<p>No slots available</p>";
+                    return;
+                }
+
+                for (const time of keys) {
+                    const status = slots[time];
+
+                    if (status === "free") {
+                        renderSlotsDiv.innerHTML += `
+                            <label>
+                                <input type="radio"
+                                       name="slot"
+                                       class="slot-radio"
+                                       data-slot="${time}">
+                                ${time} (free)
+                            </label><br>
+                        `;
+                    } else {
+                        renderSlotsDiv.innerHTML += `
+                            <p>${time} (booked)</p>
+                        `;
+                    }
+                }
+            });
+        });
+
+        // -------------------------------
+        // SLOT SELECTION (EVENT DELEGATION)
+        // -------------------------------
+        renderSlotsDiv.addEventListener("change", (e) => {
+            if (e.target.classList.contains("slot-radio")) {
+                selectedSlot = e.target.dataset.slot;
+                
+                
+            }
+        });
+
+        // -------------------------------
+        // CONFIRM BOOKING
+        // -------------------------------
+        bookButton.addEventListener("click", async () => {
+            if (!selectedDate || !selectedSlot) {
+                alert("Please select a date and a slot.");
+                return;
+            }
+
+
+            let details = {
+                    token: tokenEl.value,
+                    date: selectedDate,
+                    slot: selectedSlot
+            };
+            
+            
+            const response = await fetch(`${API_BASE_URL}/add-slots`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    token: tokenEl.value,
+                    date: selectedDate,
+                    slot: selectedSlot
+                })
+            });
+
+            if (!response.ok) {
+                alert("Booking failed. Slot may already be taken.");
+                return;
+            }else{
+
+            let response2 = await fetch(`${API_BASE_URL}/add-ap-log`,{
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    token: tokenEl.value,
+                    date: selectedDate,
+                    slot: selectedSlot
+                })
+            });
+            let data2 = await response2.json();
+            
+
+            alert("Appointment booked successfully.");
+            location.reload();
+            }
+
+
+        });
+    </script>
+</body>
+
+</html>
