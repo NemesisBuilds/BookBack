@@ -23,7 +23,7 @@ EMAIL_PASS = os.getenv("EMAIL_PASS")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://bookback.netlify.app"],
     allow_credentials=True,
     allow_headers=['*'],
     allow_methods=['*']
@@ -758,6 +758,7 @@ async def gumroad_webhook(request: Request):
     print(payload)
 
     return { "status": "ok", "updated_name": user["clinic_name"] if user else None }
+
 
 
 
