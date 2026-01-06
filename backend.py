@@ -72,7 +72,7 @@ class ModifySlots(BaseModel):
 
 # Utilities:-
 algorithm = 'HS256'
-encryption_context = CryptContext(schemes=['bcrypt_sha256'], deprecated='auto')
+encryption_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
 
 def hash_password(password: str):
     return encryption_context.hash(password)
@@ -758,6 +758,7 @@ async def gumroad_webhook(request: Request):
     print(payload)
 
     return { "status": "ok", "updated_name": user["clinic_name"] if user else None }
+
 
 
 
