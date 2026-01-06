@@ -734,25 +734,30 @@ def get_user_id(refresh_token: str = Cookie(None)):
 async def gumroad_webhook(request: Request):
     payload = await request.form()
 
-    product_id = get_product_id(payload)
+    
+    product_id = payload.get("product_id")
 
-    if product_id[1] == 'uCF_fviEP2kfAIIT4ttqIg==':
+    user_id = payload.get("url_params[user_id]")
+    if product_id == '-AaBo1HcxM6kX8FHDvgSKA==':
 
         result = (
             supabase_client
             .table("clinics")
             .update({"is_active": True})
-            .eq("id", product_id[0])
+            .eq("id", user_id)
             .execute()
         )
+        if result.data:
+            user = result.data[0]
 
-    user = result.data[0]
+    
 
 
     print("PRODUCT ID:", product_id)
     print("Full payload:-")
     print(payload)
 
-    return {"status": "ok", "updated_name": user["clinic_name"]}
+    return { "status": "ok", "updated_name": user["clinic_name"] if user else None }
+
 
 
