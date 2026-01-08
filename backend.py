@@ -12,6 +12,7 @@ from datetime import date
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from fastapi.responses import RedirectResponse
 import os
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -31,9 +32,6 @@ app.add_middleware(
 
 # IMPORTANT STUFF:-
 
-supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Schemas
 class UserSignup(BaseModel):
     username: str
     email: str
@@ -67,12 +65,47 @@ class ModifySlots(BaseModel):
     token: str
     date: date
     slot: str
+class VerifyEmailRequest(BaseModel):
+    email: str
+
+# ================= SMTP CONFIG =================
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_USER = "noreply.updates.app@gmail.com"
+  # your app password
+
+#===========Email utility function==================
+
+def send_email(email: str, clinic_name: str, verify_link: str):
+    subject = "Verify your email – BookBack"
+    body = f"""
+Hi {clinic_name},
+
+Please verify your email by clicking the link below:
+
+{verify_link}
+
+If you didn’t sign up, ignore this email.
+
+— BookBack
+"""
+
+    msg = MIMEMultipart()
+    msg["From"] = EMAIL_USER
+    msg["To"] = email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.send_message(msg)
 
 
 
 # Utilities:-
 algorithm = 'HS256'
-encryption_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+encryption_context = CryptContext(schemes=['bcrypt_sha256'], deprecated='auto')
 
 def hash_password(password: str):
     return encryption_context.hash(password)
@@ -92,7 +125,11 @@ def verify_token(token: str):
         return payload
     except JWTError:
         return None
-    
+
+
+
+
+
 import secrets
 import string
 
@@ -100,58 +137,124 @@ def generate_token(length: int = 32) -> str:
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
+#===================================================================
 
 
-@app.post('/signup')
-def user_signup(user_details: UserSignup, response: Response):
-    existing = supabase_client.table('clinics').select('*').eq('email', user_details.email).execute()
-    if existing.data:
-        raise HTTPException(status_code=400, detail=f'Email: {user_details.email} already exists !')
-
-    hashed_password = hash_password(user_details.password)
-
-    new_user = {
-        'email': user_details.email,
-        'clinic_name': user_details.username,
-        'password_hash': hashed_password
-    }
-
-    refresh_token = create_token(data={'sub': user_details.email})
-    response.set_cookie(
-        key='refresh_token',
-        value=refresh_token,
-        httponly=True,
-        secure=True,
-        samesite='none',
-        max_age=60 * 60 * 24 * 180
+#==========================ALL ROUTES==============================#
+@app.post("/signup")
+def user_signup(user_details: UserSignup):
+    # 1️⃣ Check if email already exists
+    existing = (
+        supabase_client
+        .table("clinics")
+        .select("*")
+        .eq("email", user_details.email)
+        .execute()
     )
 
-    added = supabase_client.table('clinics').insert(new_user).execute()
-    data = added.data[0]
-    return {'username': data["clinic_name"], "signup": "success", "id": data["id"]}
+    # ================= EXISTING USER =================
+    if existing.data:
+        user = existing.data[0]
+
+        # Already verified → hard reject
+        if user["email_verified"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Email already registered"
+            )
+
+        # Not verified → regenerate token
+        token = generate_token()
+
+        supabase_client.table("clinics").update({
+            "email_verify_token": token
+        }).eq("id", user["id"]).execute()
+
+        verify_link = f"http://127.0.0.1:8000/verify-email?token={token}"
+
+        # Email is a SIDE EFFECT — never break flow
+        try:
+            send_email(user["email"], user["clinic_name"], verify_link)
+        except Exception as e:
+            print("EMAIL FAILED (resend):", e)
+
+        return {
+            "signup": "pending",
+            "message": "Verification email sent (or resent)"
+        }
+
+    # ================= NEW USER =================
+    hashed_password = hash_password(user_details.password)
+    token = generate_token()
+
+    new_user = {
+        "email": user_details.email,
+        "clinic_name": user_details.username,
+        "password_hash": hashed_password,
+        "email_verified": False,
+        "email_verify_token": token
+    }
+
+    inserted = supabase_client.table("clinics").insert(new_user).execute()
+    user = inserted.data[0]
+
+    print("INSERTED USER:", user)  # ← debug once, then remove
+
+    verify_link = f"http://127.0.0.1:8000/verify-email?token={token}"
+
+    # Email send must NEVER affect DB state
+    try:
+        send_email(user["email"], user["clinic_name"], verify_link)
+    except Exception as e:
+        print("EMAIL FAILED (signup):", e)
+
+    return {
+        "signup": "success",
+        "message": "Verification email sent"
+    }
+
 
 @app.post('/login')
 def user_login(user_details: UserLogin, response: Response):
-    user = supabase_client.table('clinics').select('*').eq('email', user_details.email).single().execute()
+    result = (
+        supabase_client
+        .table('clinics')
+        .select('*')
+        .eq('email', user_details.email)
+        .execute()
+    )
 
-    if not user.data:
-        raise HTTPException(status_code=400, detail=f'User with email: {user_details.email} doesnt exist.')
+    # Email not found
+    if not result.data:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
 
-    if not verify_password(user_details.password, user.data['password_hash']):
-        raise HTTPException(status_code=400, detail=f'Incorrect password entered !')
+    user = result.data[0]
 
-    refresh_token = create_token(data={'sub': user_details.email})
+    # Password incorrect
+    if not verify_password(user_details.password, user['password_hash']):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+
+    refresh_token = create_token({'sub': user_details.email})
+
     response.set_cookie(
         key='refresh_token',
         value=refresh_token,
-        samesite='none',
         httponly=True,
-        secure=True,
+        secure=True,          # keep this TRUE in production
+        samesite='none',      # needed if frontend ≠ backend domain
         max_age=60 * 60 * 24 * 180
     )
 
-
-    return {"username": user.data["clinic_name"], "message": "login:success"}
+    return {
+        "username": user["clinic_name"],
+        "message": "login:success"
+    }
 
 @app.post("/refresh")
 def user_refresh(response: Response, refresh_token: str = Cookie(None)):
@@ -178,13 +281,19 @@ def user_refresh(response: Response, refresh_token: str = Cookie(None)):
 
     user = result.data[0]
 
+    if not user["email_verified"]:
+        return {
+            "state":"unverified"
+        }
+    
+
     new_token = create_token({"sub": email})
     response.set_cookie(
         key="refresh_token",
         value=new_token,
         httponly=True,
-        samesite='none',
-        secure=True,
+        samesite="lax",
+        secure=False,
         max_age=60 * 60 * 24 * 180
     )
 
@@ -609,11 +718,8 @@ def modify_slots(details: ModifySlots):
         "slot": details.slot
     }
 
-# ================= SMTP CONFIG =================
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-EMAIL_USER = "noreply.updates.app@gmail.com"
-  # your app password
+
+
 
 # ================= SCHEMA =================
 class SendEmail(BaseModel):
@@ -692,11 +798,7 @@ def upcoming_patients(response: Response, refresh_token: str = Cookie(None)):
 
 
 
-def get_product_id(form_data):
-    user_id = form_data.get("url_params[user_id]")
-    product_id =  form_data.get("product_id")
-    res = [user_id,product_id]
-    return res
+
 
 @app.post("/user-id")
 def get_user_id(refresh_token: str = Cookie(None)):
@@ -730,14 +832,22 @@ def get_user_id(refresh_token: str = Cookie(None)):
         "id": user["id"]        
     }
 
+def get_product_id(form_data):
+    user_id = form_data.get("url_params[user_id]")
+    product_id =  form_data.get("product_id")
+    res = [user_id,product_id]
+    return res
 @app.post("/purchase")
 async def gumroad_webhook(request: Request):
     payload = await request.form()
+    user = None
 
     
     product_id = payload.get("product_id")
 
     user_id = payload.get("url_params[user_id]")
+    if not user_id:
+        return {"message":"ignored"}
     if product_id == '-AaBo1HcxM6kX8FHDvgSKA==':
 
         result = (
@@ -749,6 +859,7 @@ async def gumroad_webhook(request: Request):
         )
         if result.data:
             user = result.data[0]
+            
 
     
 
@@ -758,6 +869,31 @@ async def gumroad_webhook(request: Request):
     print(payload)
 
     return { "status": "ok", "updated_name": user["clinic_name"] if user else None }
+
+
+
+@app.get("/verify-email")
+def verify_email(token: str):
+    res = (
+        supabase_client
+        .table("clinics")
+        .select("*")
+        .eq("email_verify_token", token)
+        .single()
+        .execute()
+    )
+
+    if not res.data:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    supabase_client.table("clinics").update({
+        "email_verified": True,
+        "email_verify_token": None
+    }).eq("id", res.data["id"]).execute()
+
+    return RedirectResponse(url="https://bookback.netlify.app/login.html")
+
+
 
 
 
