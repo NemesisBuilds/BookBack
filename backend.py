@@ -19,7 +19,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 JWT_SECRET = os.getenv("JWT_SECRET")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
-
+supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Setting up the app and adding the middleware:-
 app = FastAPI()
 app.add_middleware(
@@ -892,6 +892,7 @@ def verify_email(token: str):
     }).eq("id", res.data["id"]).execute()
 
     return RedirectResponse(url="https://bookback.netlify.app/login.html")
+
 
 
 
