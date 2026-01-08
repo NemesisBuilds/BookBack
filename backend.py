@@ -9,16 +9,19 @@ from typing import Optional
 import json
 from fastapi import Body
 from datetime import date
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests
 from fastapi.responses import RedirectResponse
 import os
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 JWT_SECRET = os.getenv("JWT_SECRET")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+if not RESEND_API_KEY:
+    raise RuntimeError("RESEND_API_KEY is not set")
+
+RESEND_FROM = "BookBack <onboarding@resend.dev>"
+
 supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Setting up the app and adding the middleware:-
 app = FastAPI()
@@ -68,42 +71,57 @@ class ModifySlots(BaseModel):
 class VerifyEmailRequest(BaseModel):
     email: str
 
-# ================= SMTP CONFIG =================
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-EMAIL_USER = "noreply.updates.app@gmail.com"
-  # your app password
 
-#===========Email utility function==================
-
-def send_email(email: str, clinic_name: str, verify_link: str):
-    subject = "Verify your email – BookBack"
-    body = f"""
-Hi {clinic_name},
-
-Please verify your email by clicking the link below:
-
-{verify_link}
-
-If you didn’t sign up, ignore this email.
-
-— BookBack
-"""
-
-    msg = MIMEMultipart()
-    msg["From"] = EMAIL_USER
-    msg["To"] = email
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
-
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.send_message(msg)
 
 
 
 # Utilities:-
+def send_email_resend(to_email: str, subject: str, html: str):
+    url = "https://api.resend.com/emails"
+
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "from": RESEND_FROM,
+        "to": [to_email],
+        "subject": subject,
+        "html": html
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"Resend error: {response.text}")
+
+def send_verification_email(email: str, clinic_name: str, verify_link: str):
+    subject = "Verify your email – BookBack"
+
+    html = f"""
+    <p>Hi <strong>{clinic_name}</strong>,</p>
+
+    <p>Please verify your email by clicking the link below:</p>
+
+    <p>
+      <a href="{verify_link}">
+        Verify Email
+      </a>
+    </p>
+
+    <p>If you didn’t sign up, ignore this email.</p>
+
+    <p>— BookBack</p>
+    """
+
+    send_email_resend(
+        to_email=email,
+        subject=subject,
+        html=html
+    )
+
+
 algorithm = 'HS256'
 encryption_context = CryptContext(schemes=['bcrypt_sha256'], deprecated='auto')
 
@@ -170,11 +188,15 @@ def user_signup(user_details: UserSignup):
             "email_verify_token": token
         }).eq("id", user["id"]).execute()
 
-        verify_link = f"http://127.0.0.1:8000/verify-email?token={token}"
+        verify_link = f"https://bookback-t83d.onrender.com/verify-email?token={token}"
 
         # Email is a SIDE EFFECT — never break flow
         try:
-            send_email(user["email"], user["clinic_name"], verify_link)
+            send_verification_email(
+                user["email"],
+                user["clinic_name"],
+                verify_link
+                            )
         except Exception as e:
             print("EMAIL FAILED (resend):", e)
 
@@ -200,11 +222,15 @@ def user_signup(user_details: UserSignup):
 
     print("INSERTED USER:", user)  # ← debug once, then remove
 
-    verify_link = f"http://127.0.0.1:8000/verify-email?token={token}"
+    verify_link = f"https://bookback-t83d.onrender.com/verify-email?token={token}"
 
     # Email send must NEVER affect DB state
     try:
-        send_email(user["email"], user["clinic_name"], verify_link)
+        send_verification_email(
+            user["email"],
+            user["clinic_name"],
+            verify_link
+            )
     except Exception as e:
         print("EMAIL FAILED (signup):", e)
 
@@ -731,26 +757,38 @@ class SendEmail(BaseModel):
 @app.post("/send-reminder-email")
 def send_reminder_email(data: SendEmail):
     try:
-        # 1️⃣ Create email
         subject = f"Appointment Reminder from {data.clinic_name}"
-        body = f"Hi,\n\nThis is a reminder for your upcoming appointment at {data.clinic_name}.\nPlease confirm your slot using this link:\n{data.link}\n\n— {data.clinic_name}"
 
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_USER
-        msg['To'] = data.patient_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+        html = f"""
+        <p>Hi,</p>
 
-        # 2️⃣ Send email
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.send_message(msg)
+        <p>This is a reminder for your upcoming appointment at
+        <strong>{data.clinic_name}</strong>.</p>
 
-        return {"status": "success", "message": f"Email sent to {data.patient_email}"}
+        <p>
+          Please confirm your slot by clicking below:
+        </p>
+
+        <p>
+          <a href="{data.link}">
+            Confirm Appointment
+          </a>
+        </p>
+
+        <p>— {data.clinic_name}</p>
+        """
+
+        send_email_resend(
+            to_email=data.patient_email,
+            subject=subject,
+            html=html
+        )
+
+        return {"status": "success"}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/upcoming")
 def upcoming_patients(response: Response, refresh_token: str = Cookie(None)):
@@ -892,6 +930,7 @@ def verify_email(token: str):
     }).eq("id", res.data["id"]).execute()
 
     return RedirectResponse(url="https://bookback.netlify.app/login.html")
+
 
 
 
